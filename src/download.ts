@@ -32,13 +32,13 @@ function masterProcess() {
   const dest = "data.nc";
 
   var download = async function(url: string, dest: string, cb: () => void) {
-    // let file = fs.createWriteStream(dest);
-    // var request = http.get(url, function(response) {
-    //   response.pipe(file);
-    //   file.on("finish", function() {
-    //     file.close(cb);
-    //   });
-    // });
+    let file = fs.createWriteStream(dest);
+    var request = http.get(url, function(response) {
+      response.pipe(file);
+      file.on("finish", function() {
+        file.close(cb);
+      });
+    });
     cb();
   };
 
