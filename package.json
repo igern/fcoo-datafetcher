@@ -1,0 +1,19 @@
+{
+  "name": "fcoo-datafetcher",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "tsc && node dist/download.js"
+  },
+  "author": "Jonas",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^12.12.14",
+    "typescript": "^3.7.2"
+  },
+  "dependencies": {
+    "mongodb": "^3.3.5",
+    "netcdfjs": "^1.0.0"
+  }
+}
