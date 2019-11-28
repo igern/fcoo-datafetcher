@@ -3,8 +3,10 @@ const NetCDFReader = require("netcdfjs");
 import cluster from "cluster";
 import os from "os";
 import http from "http";
-import { MongoClient, Db } from "mongodb";
+import { Db } from "mongodb";
+var MongoClient = require("mongodb").MongoClient;
 import assert from "assert";
+
 
 
 async function download() {
@@ -22,25 +24,21 @@ function masterProcess() {
   let numCPUs = os.cpus().length;
   console.time("executiontime");
   // Database
-  const dbUrl = process.env.url || "mongodb://mongodb:27017";
+  const dbUrl = "mongodb://igern:nkLnt69XZNRfoRM9pXRo8LRXHHVCN2Rb6jrlMt0xk3HHC6d0PUNzz2fPvHKEtjRS0rCzi0WoItJWMNY9XlaIsg%3D%3D@igern.mongo.cosmos.azure.com:10255/?ssl=true&appName=@igern@"
   const dbName = "fcoodb";
-  const client = new MongoClient(dbUrl, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-  });
   // Data configs
   const dataUrl =
     "http://wms.fcoo.dk/webmap/FCOO/GETM/idk-600m_3D-velocities_surface_1h.DK600-v007C.nc";
   const dest = "data.nc";
 
   var download = async function(url: string, dest: string, cb: () => void) {
-    let file = fs.createWriteStream(dest);
-    var request = http.get(url, function(response) {
-      response.pipe(file);
-      file.on("finish", function() {
-        file.close(cb);
-      });
-    });
+    // let file = fs.createWriteStream(dest);
+    // var request = http.get(url, function(response) {
+    //   response.pipe(file);
+    //   file.on("finish", function() {
+    //     file.close(cb);
+    //   });
+    // });
     cb();
   };
 
@@ -63,7 +61,7 @@ function masterProcess() {
   };
 
   download(dataUrl, dest, () => {
-    client.connect(async err => {
+    MongoClient.connect(dbUrl, async function (err, client) {
       console.log('started')
       assert.equal(null, err, 'something went wrong with the database connection');
       const db: Db = client.db(dbName);
@@ -76,7 +74,6 @@ function masterProcess() {
       let timestamp = Math.floor(date / 1000);
 
       await clearOverlappingCollections(db, reader, timestamp);
-      console.log('getting owned')
       let workers: cluster.Worker[] = [];
       let remainingWork = reader.getDataVariable("time");
       let index = 0;
@@ -89,13 +86,53 @@ function masterProcess() {
 
         worker.on("message", async message => {
           if (message.result) {
-            let collection = db.collection(message.collectionName);
-            collection.createIndex({ location: "2dsphere" });
-            await collection.insertMany(message.result).then(() => {
-              amountStored++;
-            });
+            let collection = db.collection(message.collectionName)
+            console.log(collection.namespace)
+            await collection.createIndex({ location: "2dsphere" });
+
+            //let jobs = chunkArray(message.result, 10000);
+
+            // for(let i = 0; i < jobs.length; i++) {
+            //   await collection.insertMany(jobs[i]).then(() => {
+            //     console.log(i)
+            //   }).catch((err: Error) => {
+            //     console.log(err.message)
+            //   })
+            //   await sleep(1000)
+            // }
+            let toSleep = false;
+            let sleepTime = 0;
+            let index = 0
+            while(index < message.result.length) {
+              if(toSleep) {
+                await sleep(sleepTime*2)
+                toSleep = false
+              }
+              await collection.insertOne(message.result[index]).then(() => {
+                
+                index++;
+                if(index % 100 == 0) {
+                  console.log(index)
+                }
+              }).catch((err: Error) => {
+                console.log(err.message)
+                console.log(err.message.split(' ')[1].split('=')[1])
+                toSleep = true;
+                sleepTime = Number.parseInt(err.message.split(' ')[1].split('=')[1])
+                console.log('error sleeping for ' + sleepTime)
+              })
+            }
+            amountStored++;
+            console.log(amountStored)
             if (amountStored >= done) {
               console.timeEnd("executiontime");
+              let allCollection = await db.collections();
+              console.log(`Number of collection: ${allCollection.length}`)
+              await db.collections().then(collections => {
+                for(collection of collections) {
+                  console.log(`${collection.namespace}: ${collection.count({})}`)
+                }
+              })
             }
             if (index < done) {
               let time = remainingWork[index];
@@ -130,6 +167,18 @@ function masterProcess() {
       });
     });
   });
+
+  const chunkArray = function(arr,n){
+    var chunkLength = Math.max(arr.length/n ,1);
+    var chunks = [];
+    for (var i = 0; i < n; i++) {
+        if(chunkLength*(i+1)<=arr.length)chunks.push(arr.slice(chunkLength*i, chunkLength*(i+1)));
+    }
+    return chunks; 
+}
+  const sleep = function(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
 }
 
 function childProcess() {

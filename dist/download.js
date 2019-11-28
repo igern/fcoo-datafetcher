@@ -16,8 +16,7 @@ const fs = require("fs");
 const NetCDFReader = require("netcdfjs");
 const cluster_1 = __importDefault(require("cluster"));
 const os_1 = __importDefault(require("os"));
-const http_1 = __importDefault(require("http"));
-const mongodb_1 = require("mongodb");
+var MongoClient = require("mongodb").MongoClient;
 const assert_1 = __importDefault(require("assert"));
 function download() {
     return __awaiter(this, void 0, void 0, function* () {
@@ -35,24 +34,20 @@ function masterProcess() {
     let numCPUs = os_1.default.cpus().length;
     console.time("executiontime");
     // Database
-    const dbUrl = process.env.url || "mongodb://mongodb:27017";
+    const dbUrl = "mongodb://igern:nkLnt69XZNRfoRM9pXRo8LRXHHVCN2Rb6jrlMt0xk3HHC6d0PUNzz2fPvHKEtjRS0rCzi0WoItJWMNY9XlaIsg%3D%3D@igern.mongo.cosmos.azure.com:10255/?ssl=true&appName=@igern@";
     const dbName = "fcoodb";
-    const client = new mongodb_1.MongoClient(dbUrl, {
-        useNewUrlParser: true,
-        useUnifiedTopology: true
-    });
     // Data configs
     const dataUrl = "http://wms.fcoo.dk/webmap/FCOO/GETM/idk-600m_3D-velocities_surface_1h.DK600-v007C.nc";
     const dest = "data.nc";
     var download = function (url, dest, cb) {
         return __awaiter(this, void 0, void 0, function* () {
-            let file = fs.createWriteStream(dest);
-            var request = http_1.default.get(url, function (response) {
-                response.pipe(file);
-                file.on("finish", function () {
-                    file.close(cb);
-                });
-            });
+            // let file = fs.createWriteStream(dest);
+            // var request = http.get(url, function(response) {
+            //   response.pipe(file);
+            //   file.on("finish", function() {
+            //     file.close(cb);
+            //   });
+            // });
             cb();
         });
     };
@@ -69,68 +64,118 @@ function masterProcess() {
         }));
     });
     download(dataUrl, dest, () => {
-        client.connect((err) => __awaiter(this, void 0, void 0, function* () {
-            console.log('started');
-            assert_1.default.equal(null, err, 'something went wrong with the database connection');
-            const db = client.db(dbName);
-            const data = fs.readFileSync("data.nc");
-            const reader = new NetCDFReader(data); // read the header
-            const lat = reader.getDataVariable("latc");
-            const lon = reader.getDataVariable("lonc");
-            let date = new Date(reader.variables[3].attributes[1].value);
-            let timestamp = Math.floor(date / 1000);
-            yield clearOverlappingCollections(db, reader, timestamp);
-            console.log('getting owned');
-            let workers = [];
-            let remainingWork = reader.getDataVariable("time");
-            let index = 0;
-            let done = remainingWork.length;
-            let amountStored = 0;
-            for (let i = 0; i < numCPUs; i++) {
-                const worker = cluster_1.default.fork();
-                workers.push(worker);
-                worker.on("message", (message) => __awaiter(this, void 0, void 0, function* () {
-                    if (message.result) {
-                        let collection = db.collection(message.collectionName);
-                        collection.createIndex({ location: "2dsphere" });
-                        yield collection.insertMany(message.result).then(() => {
+        MongoClient.connect(dbUrl, function (err, client) {
+            return __awaiter(this, void 0, void 0, function* () {
+                console.log('started');
+                assert_1.default.equal(null, err, 'something went wrong with the database connection');
+                const db = client.db(dbName);
+                const data = fs.readFileSync("data.nc");
+                const reader = new NetCDFReader(data); // read the header
+                const lat = reader.getDataVariable("latc");
+                const lon = reader.getDataVariable("lonc");
+                let date = new Date(reader.variables[3].attributes[1].value);
+                let timestamp = Math.floor(date / 1000);
+                yield clearOverlappingCollections(db, reader, timestamp);
+                let workers = [];
+                let remainingWork = reader.getDataVariable("time");
+                let index = 0;
+                let done = remainingWork.length;
+                let amountStored = 0;
+                for (let i = 0; i < numCPUs; i++) {
+                    const worker = cluster_1.default.fork();
+                    workers.push(worker);
+                    worker.on("message", (message) => __awaiter(this, void 0, void 0, function* () {
+                        if (message.result) {
+                            let collection = db.collection(message.collectionName);
+                            console.log(collection.namespace);
+                            yield collection.createIndex({ location: "2dsphere" });
+                            //let jobs = chunkArray(message.result, 10000);
+                            // for(let i = 0; i < jobs.length; i++) {
+                            //   await collection.insertMany(jobs[i]).then(() => {
+                            //     console.log(i)
+                            //   }).catch((err: Error) => {
+                            //     console.log(err.message)
+                            //   })
+                            //   await sleep(1000)
+                            // }
+                            let toSleep = false;
+                            let sleepTime = 0;
+                            let index = 0;
+                            while (index < message.result.length) {
+                                if (toSleep) {
+                                    yield sleep(sleepTime * 2);
+                                    toSleep = false;
+                                }
+                                yield collection.insertOne(message.result[index]).then(() => {
+                                    index++;
+                                    if (index % 100 == 0) {
+                                        console.log(index);
+                                    }
+                                }).catch((err) => {
+                                    console.log(err.message);
+                                    console.log(err.message.split(' ')[1].split('=')[1]);
+                                    toSleep = true;
+                                    sleepTime = Number.parseInt(err.message.split(' ')[1].split('=')[1]);
+                                    console.log('error sleeping for ' + sleepTime);
+                                });
+                            }
                             amountStored++;
-                        });
-                        if (amountStored >= done) {
-                            console.timeEnd("executiontime");
+                            console.log(amountStored);
+                            if (amountStored >= done) {
+                                console.timeEnd("executiontime");
+                                let allCollection = yield db.collections();
+                                console.log(`Number of collection: ${allCollection.length}`);
+                                yield db.collections().then(collections => {
+                                    for (collection of collections) {
+                                        console.log(`${collection.namespace}: ${collection.count({})}`);
+                                    }
+                                });
+                            }
+                            if (index < done) {
+                                let time = remainingWork[index];
+                                let dataChunkUU = reader.getDataVariable("uu")[time / 3600];
+                                let dataChunkVV = reader.getDataVariable("vv")[time / 3600];
+                                worker.send({
+                                    cmd: "work",
+                                    timestamp: timestamp,
+                                    time: remainingWork[index],
+                                    data: { uu: dataChunkUU, vv: dataChunkVV, latc: lat, lonc: lon }
+                                });
+                                index++;
+                                console.log(index);
+                            }
                         }
-                        if (index < done) {
-                            let time = remainingWork[index];
-                            let dataChunkUU = reader.getDataVariable("uu")[time / 3600];
-                            let dataChunkVV = reader.getDataVariable("vv")[time / 3600];
-                            worker.send({
-                                cmd: "work",
-                                timestamp: timestamp,
-                                time: remainingWork[index],
-                                data: { uu: dataChunkUU, vv: dataChunkVV, latc: lat, lonc: lon }
-                            });
-                            index++;
-                            console.log(index);
-                        }
-                    }
-                }));
-            }
-            workers.forEach(function (worker) {
-                if (index < done) {
-                    let time = remainingWork[index];
-                    let dataChunkUU = reader.getDataVariable("uu")[time / 3600];
-                    let dataChunkVV = reader.getDataVariable("vv")[time / 3600];
-                    worker.send({
-                        cmd: "work",
-                        timestamp: timestamp,
-                        time: remainingWork[index],
-                        data: { uu: dataChunkUU, vv: dataChunkVV, latc: lat, lonc: lon }
-                    });
-                    index++;
+                    }));
                 }
+                workers.forEach(function (worker) {
+                    if (index < done) {
+                        let time = remainingWork[index];
+                        let dataChunkUU = reader.getDataVariable("uu")[time / 3600];
+                        let dataChunkVV = reader.getDataVariable("vv")[time / 3600];
+                        worker.send({
+                            cmd: "work",
+                            timestamp: timestamp,
+                            time: remainingWork[index],
+                            data: { uu: dataChunkUU, vv: dataChunkVV, latc: lat, lonc: lon }
+                        });
+                        index++;
+                    }
+                });
             });
-        }));
+        });
     });
+    const chunkArray = function (arr, n) {
+        var chunkLength = Math.max(arr.length / n, 1);
+        var chunks = [];
+        for (var i = 0; i < n; i++) {
+            if (chunkLength * (i + 1) <= arr.length)
+                chunks.push(arr.slice(chunkLength * i, chunkLength * (i + 1)));
+        }
+        return chunks;
+    };
+    const sleep = function (ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    };
 }
 function childProcess() {
     const calculateMagnitude = (x, y) => {
